@@ -4,7 +4,7 @@ import { Environment, MeshReflectorMaterial, OrbitControls } from '@react-three/
 import { MOUSE } from 'three';
 import Loader from './Loader.jsx';
 
-const Layout = ({ loading, children, controls = null, cameraPosition = [4, 0.8, 3], fov = 50 }) => {
+const Layout = ({ loading, children, controls = null, cameraPosition = [-1, 0.8, 3], fov = 50 }) => {
   return (
     <>
       {controls && <div className="controls">{controls}</div>}
@@ -12,8 +12,7 @@ const Layout = ({ loading, children, controls = null, cameraPosition = [4, 0.8, 
       <div className="canvas-container">
         <Canvas camera={{ position: cameraPosition, fov }} shadows>
           <ambientLight intensity={1} />
-          <directionalLight position={[1, 0, 0]} />
-          <pointLight position={[0, 2.5, 0]} intensity={20} color="white" />
+          <directionalLight position={[0, 0, 2]} />
           <OrbitControls
             mouseButtons={{
               LEFT: MOUSE.RIGHT,
