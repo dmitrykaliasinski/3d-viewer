@@ -57,7 +57,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     e.stopPropagation();
     const clickedObject = e.object;
     const name = clickedObject.name;
-    console.log(name);
+
     const clipName = Object.keys(actionsRef.current).find(clip => clip.toLowerCase() === name.toLowerCase());
     if (!clipName) return;
 

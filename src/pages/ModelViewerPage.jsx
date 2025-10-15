@@ -18,7 +18,6 @@ export const ModelViewerPage = () => {
   const modelPath = model[modelName]?.path || ERROR_MODEL_PATH;
   const cameraPosition = model[modelName]?.cameraPosition || [0, 0.8, 4];
 
-  console.log(model);
   return (
     <Layout loading={loading} cameraPosition={cameraPosition}>
       <InteractiveModel
