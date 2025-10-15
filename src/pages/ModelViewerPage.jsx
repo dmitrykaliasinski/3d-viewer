@@ -17,7 +17,7 @@ export const ModelViewerPage = () => {
   const modelPath = modelPaths[modelName] || ERROR_MODEL_PATH;
 
   return (
-    <Layout loading={loading}>
+    <Layout loading={loading} cameraPosition={modelPath === ERROR_MODEL_PATH ? [0, 0.8, 4] : [5, 0.8, 4]}>
       <InteractiveModel
         modelUrl={modelPath}
         onLoaded={() => setLoading(false)}
