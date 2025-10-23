@@ -13,6 +13,7 @@ export const ModelViewerPage = () => {
     K7748C: { path: '/models/K7748C.glb', cameraPosition: [-1, 2, 4] },
     DGC7460HCPro: { path: '/models/DGC7460HCPro.glb', cameraPosition: [-0.5, 0.6, 1.5] },
     G5868SCVIXXL: { path: '/models/G5868SCVIXXL.glb', cameraPosition: [-1, 1, 2] },
+    '5B70N9690ME': { path: '/models/5B70N9690ME.glb', cameraPosition: [-0.5, 0.6, 1.5] },
   };
 
   const modelPath = model[modelName]?.path || ERROR_MODEL_PATH;
