@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useCursor, useGLTF } from '@react-three/drei';
-import { AnimationMixer, Box3, LoopOnce, PointLight, Vector3 } from 'three';
-import { useFrame } from '@react-three/fiber';
+import { AnimationMixer, Box3, LoopOnce, Vector3 } from 'three';
+import { createPortal, useFrame } from '@react-three/fiber';
 
 const normalizeName = name => name.replace(/\./g, '').toLowerCase();
 
@@ -55,7 +55,8 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   const clipMetaRef = useRef([]);
   const lampOnRef = useRef(false);
   const lampMaterialsRef = useRef([]);
-  const ovenLightRef = useRef(null);
+  const [lampOn, setLampOn] = useState(false);
+  const [lampMount, setLampMount] = useState(null);
 
   useEffect(() => {
     if (!scene || !animations) return;
@@ -71,12 +72,8 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     clipMetaRef.current = [];
     lampMaterialsRef.current = [];
     lampOnRef.current = false;
-
-    if (ovenLightRef.current) {
-      ovenLightRef.current.parent?.remove(ovenLightRef.current);
-      ovenLightRef.current.dispose();
-      ovenLightRef.current = null;
-    }
+    setLampOn(false);
+    setLampMount(null);
 
     let lightRoot = null;
 
@@ -105,17 +102,10 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
       });
     });
 
-    if (lightRoot && !lightRoot.userData.ovenLight) {
-      const lamp = new PointLight(0xffe1a8, 0, 1.8);
+    if (lightRoot) {
       const center = new Box3().setFromObject(lightRoot).getCenter(new Vector3());
       lightRoot.worldToLocal(center);
-      lamp.position.copy(center);
-      lightRoot.add(lamp);
-      lightRoot.userData.ovenLight = lamp;
-      ovenLightRef.current = lamp;
-    } else if (lightRoot) {
-      ovenLightRef.current = lightRoot.userData.ovenLight;
-      if (ovenLightRef.current) ovenLightRef.current.intensity = 0;
+      setLampMount({ parent: lightRoot, position: center.toArray() });
     }
 
     if (animations.length > 0) {
@@ -190,6 +180,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
 
   const applyLampState = on => {
     lampOnRef.current = on;
+    setLampOn(on);
     lampMaterialsRef.current.forEach(({ mat, emissive, emissiveIntensity }) => {
       if (on) {
         const isLamp = /light/i.test(mat.name);
@@ -201,10 +192,6 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
       }
       mat.needsUpdate = true;
     });
-
-    if (ovenLightRef.current) {
-      ovenLightRef.current.intensity = on ? 10 : 0;
-    }
   };
 
   const clickableElementHover = e => {
@@ -248,14 +235,27 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   };
 
   return (
-    <primitive
-      key={modelUrl}
-      object={scene}
-      position={position}
-      scale={scale}
-      onPointerDown={handlePointerDown}
-      onPointerOver={clickableElementHover}
-      onPointerOut={() => setHover(false)}
-    />
+    <>
+      <primitive
+        key={modelUrl}
+        object={scene}
+        position={position}
+        scale={scale}
+        onPointerDown={handlePointerDown}
+        onPointerOver={clickableElementHover}
+        onPointerOut={() => setHover(false)}
+      />
+      {lampMount &&
+        createPortal(
+          <pointLight
+            color="#ffe1a8"
+            intensity={lampOn ? 2 : 0}
+            distance={0}
+            decay={2}
+            position={lampMount.position}
+          />,
+          lampMount.parent
+        )}
+    </>
   );
 };
