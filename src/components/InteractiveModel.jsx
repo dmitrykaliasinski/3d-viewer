@@ -249,7 +249,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
         createPortal(
           <pointLight
             color="#ffe1a8"
-            intensity={lampOn ? 2 : 0}
+            intensity={lampOn ? 1 : 0}
             distance={0}
             decay={2}
             position={lampMount.position}
