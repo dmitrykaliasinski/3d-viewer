@@ -3,6 +3,7 @@ import { useCursor, useGLTF } from '@react-three/drei';
 import { AnimationMixer, Box3, LoopOnce, Vector3 } from 'three';
 import { createPortal, useFrame } from '@react-three/fiber';
 
+// Model exports use dots and numeric suffixes differently for clips and objects.
 const normalizeName = name => name.replace(/\./g, '').toLowerCase();
 
 const getTrackTargetName = trackName => trackName.split('.')[0];
@@ -45,6 +46,108 @@ const isLightObjectName = name => {
   return base === 'light_on_off' || base.startsWith('light_on_off');
 };
 
+const getMaterials = material => (Array.isArray(material) ? material : [material]);
+
+const prepareMaterials = scene => {
+  const originalDepthWrites = new Map();
+  scene.traverse(child => {
+    if (!child.isMesh || !child.material) return;
+    getMaterials(child.material).forEach(material => {
+      if (!originalDepthWrites.has(material)) originalDepthWrites.set(material, material.depthWrite);
+      material.depthWrite = true;
+    });
+  });
+
+  return () => {
+    originalDepthWrites.forEach((depthWrite, material) => {
+      material.depthWrite = depthWrite;
+    });
+  };
+};
+
+// Display meshes toggle the lamp; Light_ON_OFF identifies its mesh and light mount.
+const prepareLamp = scene => {
+  const lampMaterials = [];
+  const replacements = [];
+  let lightRoot = null;
+
+  scene.traverse(child => {
+    if (!objectNames(child).some(isLightObjectName)) return;
+    if (!lightRoot) lightRoot = child;
+    if (!child.isMesh || !child.material) return;
+
+    // useGLTF caches the scene. Restore its materials when this viewer releases it.
+    const originalMaterial = child.material;
+    child.material = Array.isArray(originalMaterial)
+      ? originalMaterial.map(material => material.clone())
+      : originalMaterial.clone();
+    replacements.push({ child, originalMaterial, materials: getMaterials(child.material) });
+
+    getMaterials(child.material).forEach(mat => {
+      if (!/light|glass/i.test(mat.name) || !mat.emissive) return;
+      lampMaterials.push({
+        mat,
+        emissive: mat.emissive.clone(),
+        emissiveIntensity: mat.emissiveIntensity ?? 1,
+      });
+    });
+  });
+
+  let mount = null;
+  if (lightRoot) {
+    const center = new Box3().setFromObject(lightRoot).getCenter(new Vector3());
+    lightRoot.worldToLocal(center);
+    mount = { parent: lightRoot, position: center.toArray() };
+  }
+
+  return {
+    materials: lampMaterials,
+    mount,
+    cleanup: () => {
+      replacements.forEach(({ child, originalMaterial, materials }) => {
+        child.material = originalMaterial;
+        // Textures remain shared with the cached GLTF and must not be disposed here.
+        materials.forEach(material => material.dispose());
+      });
+    },
+  };
+};
+
+const prepareAnimations = (scene, animations) => {
+  const mixer = animations.length > 0 ? new AnimationMixer(scene) : null;
+  const actions = {};
+  const objectClipMap = new Map();
+  const clipMeta = [];
+  const bindObjectToClip = (object, clipName) => {
+    object.traverse(child => {
+      if (!objectClipMap.has(child.uuid)) {
+        objectClipMap.set(child.uuid, clipName);
+      }
+    });
+  };
+
+  animations.forEach(clip => {
+    const clipName = clip.name.replace(/\./g, '');
+    actions[clipName] = mixer.clipAction(clip);
+
+    const targetNames = new Set(clip.tracks.map(track => getTrackTargetName(track.name)));
+    clipMeta.push({ clipName, targetNames });
+
+    const normalizedTargets = new Set([...targetNames].map(normalizeName));
+
+    scene.traverse(object => {
+      const names = objectNames(object);
+      const matchesClip = names.some(name => namesReferToClip(name, clipName));
+      const matchesTarget = names.some(name => normalizedTargets.has(normalizeName(name)));
+      if (matchesClip || matchesTarget) {
+        bindObjectToClip(object, clipName);
+      }
+    });
+  });
+
+  return { mixer, actions, objectClipMap, clipMeta };
+};
+
 export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], scale = 1 }) => {
   const { scene, animations } = useGLTF(modelUrl);
   const [activeActions, setActiveActions] = useState({});
@@ -58,98 +161,44 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   const [lampOn, setLampOn] = useState(false);
   const [lampMount, setLampMount] = useState(null);
 
+  const onLoadedRef = useRef(onLoaded);
+
   useEffect(() => {
-    if (!scene || !animations) return;
+    onLoadedRef.current = onLoaded;
+  }, [onLoaded]);
 
-    scene.traverse(child => {
-      if (child.isMesh && child.material) {
-        child.material.depthWrite = true;
-      }
-    });
+  useEffect(() => {
+    const restoreMaterials = prepareMaterials(scene);
+    const lamp = prepareLamp(scene);
+    const { mixer, actions, objectClipMap, clipMeta } = prepareAnimations(scene, animations);
 
-    objectClipMapRef.current = new Map();
-    actionsRef.current = {};
-    clipMetaRef.current = [];
-    lampMaterialsRef.current = [];
+    mixerRef.current = mixer;
+    actionsRef.current = actions;
+    objectClipMapRef.current = objectClipMap;
+    clipMetaRef.current = clipMeta;
+    lampMaterialsRef.current = lamp.materials;
     lampOnRef.current = false;
+    setActiveActions({});
     setLampOn(false);
-    setLampMount(null);
-
-    let lightRoot = null;
-
-    scene.traverse(child => {
-      if (!objectNames(child).some(isLightObjectName)) return;
-      if (!lightRoot) lightRoot = child;
-
-      if (!child.isMesh || !child.material) return;
-
-      if (!child.userData.lampMaterialCloned) {
-        child.material = Array.isArray(child.material)
-          ? child.material.map(material => material.clone())
-          : child.material.clone();
-        child.userData.lampMaterialCloned = true;
-      }
-
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      materials.forEach(mat => {
-        if (!mat?.name) return;
-        if (!/light|glass/i.test(mat.name)) return;
-        lampMaterialsRef.current.push({
-          mat,
-          emissive: mat.emissive.clone(),
-          emissiveIntensity: mat.emissiveIntensity ?? 1,
-        });
-      });
-    });
-
-    if (lightRoot) {
-      const center = new Box3().setFromObject(lightRoot).getCenter(new Vector3());
-      lightRoot.worldToLocal(center);
-      setLampMount({ parent: lightRoot, position: center.toArray() });
-    }
-
-    if (animations.length > 0) {
-      mixerRef.current = new AnimationMixer(scene);
-
-      const bindObjectToClip = (object, clipName) => {
-        object.traverse(child => {
-          if (!objectClipMapRef.current.has(child.uuid)) {
-            objectClipMapRef.current.set(child.uuid, clipName);
-          }
-        });
-      };
-
-      animations.forEach(clip => {
-        const clipName = clip.name.replace(/\./g, '');
-        actionsRef.current[clipName] = mixerRef.current.clipAction(clip);
-
-        const targetNames = new Set(clip.tracks.map(track => getTrackTargetName(track.name)));
-        clipMetaRef.current.push({ clipName, targetNames });
-
-        const normalizedTargets = new Set([...targetNames].map(normalizeName));
-
-        scene.traverse(object => {
-          const names = objectNames(object);
-          const matchesClip = names.some(name => namesReferToClip(name, clipName));
-          const matchesTarget = names.some(name => normalizedTargets.has(normalizeName(name)));
-          if (matchesClip || matchesTarget) {
-            bindObjectToClip(object, clipName);
-          }
-        });
-      });
-    }
-
-    onLoaded?.();
+    setLampMount(lamp.mount);
+    setHover(false);
 
     return () => {
-      mixerRef.current?.stopAllAction();
+      mixer?.stopAllAction();
+      mixer?.uncacheRoot(scene);
+      lamp.cleanup();
+      restoreMaterials();
       mixerRef.current = null;
       actionsRef.current = {};
       objectClipMapRef.current = new Map();
       clipMetaRef.current = [];
-      setActiveActions({});
+      lampMaterialsRef.current = [];
     };
-  }, [scene, animations, onLoaded]);
+  }, [scene, animations]);
+
+  useEffect(() => {
+    onLoadedRef.current?.();
+  }, [scene, animations]);
 
   useCursor(hovered);
   useFrame((_, delta) => {
@@ -169,7 +218,9 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     for (const { clipName, targetNames } of clipMetaRef.current) {
       if (names.some(name => namesReferToClip(name, clipName))) return clipName;
       for (const targetName of targetNames) {
-        if (names.some(name => namesReferToClip(name, targetName) || normalizeName(name) === normalizeName(targetName))) {
+        if (
+          names.some(name => namesReferToClip(name, targetName) || normalizeName(name) === normalizeName(targetName))
+        ) {
           return clipName;
         }
       }
@@ -190,7 +241,6 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
         mat.emissive.copy(emissive);
         mat.emissiveIntensity = emissiveIntensity;
       }
-      mat.needsUpdate = true;
     });
   };
 
@@ -199,7 +249,10 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     setHover(Boolean(findClipName(e.object) || isDisplayObject(e.object)));
   };
 
-  const handlePointerDown = e => {
+  const handleClick = e => {
+    // R3F reports movement since pointer-down in pixels; dragging controls must not activate parts.
+    if (e.button !== 0 || e.delta > 2) return;
+
     e.stopPropagation();
 
     if (isDisplayObject(e.object)) {
@@ -216,6 +269,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     const isActive = activeActions[clipName];
 
     if (isActive) {
+      // Preserve the existing reverse-playback start used by the current models.
       action.time = 1;
       action.paused = false;
       action.timeScale = -1;
@@ -241,7 +295,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
         object={scene}
         position={position}
         scale={scale}
-        onPointerDown={handlePointerDown}
+        onClick={handleClick}
         onPointerOver={clickableElementHover}
         onPointerOut={() => setHover(false)}
       />
@@ -254,7 +308,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
             decay={2}
             position={lampMount.position}
           />,
-          lampMount.parent
+          lampMount.parent,
         )}
     </>
   );
