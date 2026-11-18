@@ -14,7 +14,7 @@ export function parseAnimationName(name) {
 export function createDependencyController(mixer, actions, warn = console.warn) {
   const parts = new Map(Object.entries(actions).map(([name, action]) => [name, {
     name, action, ...parseAnimationName(name), parents: [], children: [],
-    state: 'closed', pending: null, locked: false,
+    state: 'closed', pending: null, group: null,
   }]));
   const byId = new Map();
   for (const part of parts.values()) {
@@ -59,9 +59,14 @@ export function createDependencyController(mixer, actions, warn = console.warn) 
     return [...result];
   };
   for (const part of parts.values()) {
-    if (component(part).some(item => item.invalid)) part.invalid = true;
+    if (part.group) continue;
+    const members = component(part);
+    const group = { invalid: members.some(item => item.invalid), locked: false };
+    members.forEach(item => {
+      item.group = group;
+    });
   }
-  const invalid = [...parts.values()].filter(part => part.invalid);
+  const invalid = [...parts.values()].filter(part => part.group.invalid);
   if (invalid.length) warn(`Animation dependencies are invalid; disabled clips: ${invalid.map(part => part.name).join(', ')}`);
 
   let disposed = false;
@@ -104,19 +109,14 @@ export function createDependencyController(mixer, actions, warn = console.warn) 
   return {
     async toggle(name) {
       const part = parts.get(name);
-      if (!part || part.invalid || disposed) return false;
-      const group = component(part);
-      if (group.some(item => item.locked)) return false;
-      group.forEach(item => {
-        item.locked = true;
-      });
+      if (!part || part.group.invalid || part.group.locked || disposed) return false;
+      const { group } = part;
+      group.locked = true;
       try {
         await transition(part, part.state === 'closed', new Map());
         return !disposed;
       } finally {
-        group.forEach(item => {
-          item.locked = false;
-        });
+        group.locked = false;
       }
     },
     dispose() {

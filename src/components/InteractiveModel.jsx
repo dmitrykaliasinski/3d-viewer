@@ -124,7 +124,7 @@ const prepareAnimations = (scene, animations) => {
   const mixer = animations.length > 0 ? new AnimationMixer(scene) : null;
   const actions = {};
   const objectClipMap = new Map();
-  const clipMeta = [];
+  const legacyClips = [];
   const bindObjectToClip = (object, clipName) => {
     object.traverse(child => {
       if (!objectClipMap.has(child.uuid)) {
@@ -137,11 +137,11 @@ const prepareAnimations = (scene, animations) => {
     const clipName = clip.name;
     actions[clipName] = mixer.clipAction(clip);
 
-    const targetNames = new Set(clip.tracks.map(track => getTrackTargetName(track.name)));
+    const targetNames = [...new Set(clip.tracks.map(track => getTrackTargetName(track.name)))];
     const structured = Boolean(parseAnimationName(clipName).id);
-    clipMeta.push({ clipName, targetNames, structured });
+    if (!structured) legacyClips.push({ clipName, targetNames });
 
-    const normalizedTargets = new Set([...targetNames].map(normalizeName));
+    const normalizedTargets = new Set(targetNames.map(normalizeName));
 
     scene.traverse(object => {
       const names = objectNames(object);
@@ -153,7 +153,20 @@ const prepareAnimations = (scene, animations) => {
     });
   });
 
-  return { mixer, actions, objectClipMap, clipMeta };
+  if (legacyClips.length) scene.traverse(object => {
+    if (objectClipMap.has(object.uuid)) return;
+
+    const names = chainNames(object);
+    const match = legacyClips.find(({ clipName, targetNames }) =>
+      names.some(name =>
+        namesReferToClip(name, clipName) ||
+        targetNames.some(targetName => namesReferToClip(name, targetName))
+      )
+    );
+    if (match) objectClipMap.set(object.uuid, match.clipName);
+  });
+
+  return { mixer, actions, objectClipMap };
 };
 
 export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], scale = 1 }) => {
@@ -162,7 +175,6 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   const mixerRef = useRef(null);
   const controllerRef = useRef(null);
   const objectClipMapRef = useRef(new Map());
-  const clipMetaRef = useRef([]);
   const lampOnRef = useRef(false);
   const lampMaterialsRef = useRef([]);
   const [lampOn, setLampOn] = useState(false);
@@ -177,13 +189,12 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   useEffect(() => {
     const restoreMaterials = prepareMaterials(scene);
     const lamp = prepareLamp(scene);
-    const { mixer, actions, objectClipMap, clipMeta } = prepareAnimations(scene, animations);
+    const { mixer, actions, objectClipMap } = prepareAnimations(scene, animations);
 
     mixerRef.current = mixer;
     const controller = createDependencyController(mixer, actions);
     controllerRef.current = controller;
     objectClipMapRef.current = objectClipMap;
-    clipMetaRef.current = clipMeta;
     lampMaterialsRef.current = lamp.materials;
     lampOnRef.current = false;
     setLampOn(false);
@@ -199,7 +210,6 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
       mixerRef.current = null;
       controllerRef.current = null;
       objectClipMapRef.current = new Map();
-      clipMetaRef.current = [];
       lampMaterialsRef.current = [];
     };
   }, [scene, animations]);
@@ -212,31 +222,6 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   useFrame((_, delta) => {
     if (mixerRef.current) mixerRef.current.update(delta);
   });
-
-  const findClipName = object => {
-    let current = object;
-    while (current) {
-      const mapped = objectClipMapRef.current.get(current.uuid);
-      if (mapped) return mapped;
-      current = current.parent;
-    }
-
-    const names = chainNames(object);
-
-    for (const { clipName, targetNames, structured } of clipMetaRef.current) {
-      if (structured) continue;
-      if (names.some(name => namesReferToClip(name, clipName))) return clipName;
-      for (const targetName of targetNames) {
-        if (
-          names.some(name => namesReferToClip(name, targetName) || normalizeName(name) === normalizeName(targetName))
-        ) {
-          return clipName;
-        }
-      }
-    }
-
-    return null;
-  };
 
   const applyLampState = on => {
     lampOnRef.current = on;
@@ -255,7 +240,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
 
   const clickableElementHover = e => {
     e.stopPropagation();
-    setHover(Boolean(findClipName(e.object) || isDisplayObject(e.object)));
+    setHover(objectClipMapRef.current.has(e.object.uuid) || isDisplayObject(e.object));
   };
 
   const handleClick = e => {
@@ -269,7 +254,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
       return;
     }
 
-    const clipName = findClipName(e.object);
+    const clipName = objectClipMapRef.current.get(e.object.uuid);
     if (!clipName) return;
 
     void controllerRef.current?.toggle(clipName);
