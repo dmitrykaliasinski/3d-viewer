@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useCursor, useGLTF } from '@react-three/drei';
-import { AnimationMixer, Box3, LoopOnce, Vector3 } from 'three';
+import { AnimationMixer, Box3, Vector3 } from 'three';
 import { createPortal, useFrame } from '@react-three/fiber';
+import { createDependencyController, parseAnimationName } from '../animation/dependencyController';
 
 // Model exports use dots and numeric suffixes differently for clips and objects.
 const normalizeName = name => name.replace(/\./g, '').toLowerCase();
@@ -43,7 +44,7 @@ const isDisplayObject = object =>
 
 const isLightObjectName = name => {
   const base = normalizedBaseName(name);
-  return base === 'light_on_off' || base.startsWith('light_on_off');
+  return base === 'light' || base.startsWith('light');
 };
 
 const getMaterials = material => (Array.isArray(material) ? material : [material]);
@@ -65,14 +66,20 @@ const prepareMaterials = scene => {
   };
 };
 
-// Display meshes toggle the lamp; Light_ON_OFF identifies its mesh and light mount.
+// Display meshes toggle the lamp. Newer exports name the lamp mesh Light.
 const prepareLamp = scene => {
   const lampMaterials = [];
   const replacements = [];
   let lightRoot = null;
 
   scene.traverse(child => {
-    if (!objectNames(child).some(isLightObjectName)) return;
+    const names = objectNames(child);
+    const isLamp =
+      names.some(isLightObjectName) &&
+      child.isMesh &&
+      child.material &&
+      getMaterials(child.material).some(mat => /light/i.test(mat.name) && mat.emissive);
+    if (!isLamp) return;
     if (!lightRoot) lightRoot = child;
     if (!child.isMesh || !child.material) return;
 
@@ -127,17 +134,18 @@ const prepareAnimations = (scene, animations) => {
   };
 
   animations.forEach(clip => {
-    const clipName = clip.name.replace(/\./g, '');
+    const clipName = clip.name;
     actions[clipName] = mixer.clipAction(clip);
 
     const targetNames = new Set(clip.tracks.map(track => getTrackTargetName(track.name)));
-    clipMeta.push({ clipName, targetNames });
+    const structured = Boolean(parseAnimationName(clipName).id);
+    clipMeta.push({ clipName, targetNames, structured });
 
     const normalizedTargets = new Set([...targetNames].map(normalizeName));
 
     scene.traverse(object => {
       const names = objectNames(object);
-      const matchesClip = names.some(name => namesReferToClip(name, clipName));
+      const matchesClip = !structured && names.some(name => namesReferToClip(name, clipName));
       const matchesTarget = names.some(name => normalizedTargets.has(normalizeName(name)));
       if (matchesClip || matchesTarget) {
         bindObjectToClip(object, clipName);
@@ -150,10 +158,9 @@ const prepareAnimations = (scene, animations) => {
 
 export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], scale = 1 }) => {
   const { scene, animations } = useGLTF(modelUrl);
-  const [activeActions, setActiveActions] = useState({});
   const [hovered, setHover] = useState(false);
   const mixerRef = useRef(null);
-  const actionsRef = useRef({});
+  const controllerRef = useRef(null);
   const objectClipMapRef = useRef(new Map());
   const clipMetaRef = useRef([]);
   const lampOnRef = useRef(false);
@@ -173,23 +180,24 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     const { mixer, actions, objectClipMap, clipMeta } = prepareAnimations(scene, animations);
 
     mixerRef.current = mixer;
-    actionsRef.current = actions;
+    const controller = createDependencyController(mixer, actions);
+    controllerRef.current = controller;
     objectClipMapRef.current = objectClipMap;
     clipMetaRef.current = clipMeta;
     lampMaterialsRef.current = lamp.materials;
     lampOnRef.current = false;
-    setActiveActions({});
     setLampOn(false);
     setLampMount(lamp.mount);
     setHover(false);
 
     return () => {
+      controller.dispose();
       mixer?.stopAllAction();
       mixer?.uncacheRoot(scene);
       lamp.cleanup();
       restoreMaterials();
       mixerRef.current = null;
-      actionsRef.current = {};
+      controllerRef.current = null;
       objectClipMapRef.current = new Map();
       clipMetaRef.current = [];
       lampMaterialsRef.current = [];
@@ -215,7 +223,8 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
 
     const names = chainNames(object);
 
-    for (const { clipName, targetNames } of clipMetaRef.current) {
+    for (const { clipName, targetNames, structured } of clipMetaRef.current) {
+      if (structured) continue;
       if (names.some(name => namesReferToClip(name, clipName))) return clipName;
       for (const targetName of targetNames) {
         if (
@@ -263,29 +272,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
     const clipName = findClipName(e.object);
     if (!clipName) return;
 
-    const action = actionsRef.current[clipName];
-    if (!action) return;
-
-    const isActive = activeActions[clipName];
-
-    if (isActive) {
-      // Preserve the existing reverse-playback start used by the current models.
-      action.time = 1;
-      action.paused = false;
-      action.timeScale = -1;
-      action.play();
-    } else {
-      action.reset();
-      action.timeScale = 1;
-      action.clampWhenFinished = true;
-      action.loop = LoopOnce;
-      action.play();
-    }
-
-    setActiveActions(prev => ({
-      ...prev,
-      [clipName]: !isActive,
-    }));
+    void controllerRef.current?.toggle(clipName);
   };
 
   return (
@@ -302,7 +289,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
       {lampMount &&
         createPortal(
           <pointLight
-            color="#ffe1a8"
+            color='#ffe1a8'
             intensity={lampOn ? 2 : 0}
             distance={0}
             decay={2}
