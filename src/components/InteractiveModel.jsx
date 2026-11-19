@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useCursor, useGLTF } from '@react-three/drei';
-import { AnimationMixer, Box3, Vector3 } from 'three';
+import { AnimationMixer, Box3, BoxGeometry, Mesh, MeshBasicMaterial, Vector3 } from 'three';
 import { createPortal, useFrame } from '@react-three/fiber';
 import { createDependencyController, parseAnimationName } from '../animation/dependencyController';
 
@@ -125,6 +125,7 @@ const prepareAnimations = (scene, animations) => {
   const actions = {};
   const objectClipMap = new Map();
   const legacyClips = [];
+  const grillHitAreas = [];
   const bindObjectToClip = (object, clipName) => {
     object.traverse(child => {
       if (!objectClipMap.has(child.uuid)) {
@@ -139,6 +140,7 @@ const prepareAnimations = (scene, animations) => {
 
     const targetNames = [...new Set(clip.tracks.map(track => getTrackTargetName(track.name)))];
     const structured = Boolean(parseAnimationName(clipName).id);
+    const isGrill = /^out\.grid(?:\.requires\.|$)/i.test(clipName);
     if (!structured) legacyClips.push({ clipName, targetNames });
 
     const normalizedTargets = new Set(targetNames.map(normalizeName));
@@ -149,6 +151,9 @@ const prepareAnimations = (scene, animations) => {
       const matchesTarget = names.some(name => normalizedTargets.has(normalizeName(name)));
       if (matchesClip || matchesTarget) {
         bindObjectToClip(object, clipName);
+      }
+      if (isGrill && matchesTarget && object.isMesh && objectClipMap.get(object.uuid) === clipName) {
+        grillHitAreas.push({ object, clipName });
       }
     });
   });
@@ -166,7 +171,30 @@ const prepareAnimations = (scene, animations) => {
     if (match) objectClipMap.set(object.uuid, match.clipName);
   });
 
-  return { mixer, actions, objectClipMap };
+  const hitMeshes = grillHitAreas.map(({ object, clipName }) => {
+    object.geometry.computeBoundingBox();
+    const bounds = object.geometry.boundingBox;
+    const size = bounds.getSize(new Vector3());
+    const hitMesh = new Mesh(
+      new BoxGeometry(size.x, Math.max(size.y, 0.025), size.z),
+      new MeshBasicMaterial({ visible: false }),
+    );
+    bounds.getCenter(hitMesh.position);
+    object.add(hitMesh);
+    objectClipMap.set(hitMesh.uuid, clipName);
+    return hitMesh;
+  });
+
+  return {
+    mixer, actions, objectClipMap,
+    removeHitMeshes() {
+      hitMeshes.forEach(mesh => {
+        mesh.removeFromParent();
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+      });
+    },
+  };
 };
 
 export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], scale = 1 }) => {
@@ -189,7 +217,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
   useEffect(() => {
     const restoreMaterials = prepareMaterials(scene);
     const lamp = prepareLamp(scene);
-    const { mixer, actions, objectClipMap } = prepareAnimations(scene, animations);
+    const { mixer, actions, objectClipMap, removeHitMeshes } = prepareAnimations(scene, animations);
 
     mixerRef.current = mixer;
     const controller = createDependencyController(mixer, actions);
@@ -205,6 +233,7 @@ export const InteractiveModel = ({ modelUrl, onLoaded, position = [0, 0, 0], sca
       controller.dispose();
       mixer?.stopAllAction();
       mixer?.uncacheRoot(scene);
+      removeHitMeshes();
       lamp.cleanup();
       restoreMaterials();
       mixerRef.current = null;
